@@ -74,7 +74,7 @@ def check_rate_limit(client_id: str):
 # POST /orders
 # Idempotent order creation
 # ==========================================================
-@app.post("/orders", status_code=201)
+@app.get("/orders", status_code=201)
 def create_order(
     response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
@@ -82,7 +82,9 @@ def create_order(
 ):
     global next_order_id
 
-    check_rate_limit(client_id)
+    rate_limit_response = check_rate_limit(client_id)
+    if rate_limit_response:
+        return rate_limit_response
 
     # If key already exists, return same order
     if idempotency_key in idempotency_store:
