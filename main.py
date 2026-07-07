@@ -6,9 +6,10 @@ import time
 
 app = FastAPI()
 
+# Allowed origins
 allowed_origins = [
     "https://app-1fzxpn.example.com",
-    "https://exam.sanand.workers.dev"
+    "https://exam.sanand.workers.dev",
 ]
 
 app.add_middleware(
@@ -19,39 +20,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Store timestamps for each client
 client_requests = {}
 
+# Single middleware for Request ID + Rate Limiting
 @app.middleware("http")
-async def request_context(request: Request, call_next):
+async def request_context_and_rate_limit(request: Request, call_next):
+    # -----------------------------
+    # Request Context
+    # -----------------------------
     request_id = request.headers.get("X-Request-ID")
-
     if not request_id:
         request_id = str(uuid.uuid4())
 
     request.state.request_id = request_id
 
-    response = await call_next(request)
-
-    response.headers["X-Request-ID"] = request_id
-
-    return response
-
-@app.middleware("http")
-async def rate_limit(request: Request, call_next):
+    # -----------------------------
+    # Rate Limiting
+    # -----------------------------
     client_id = request.headers.get("X-Client-Id", "anonymous")
     now = time.time()
 
     if client_id not in client_requests:
         client_requests[client_id] = []
 
+    # Keep only requests from the last 10 seconds
     client_requests[client_id] = [
         t for t in client_requests[client_id]
         if now - t < 10
     ]
 
+    # Limit: 10 requests / 10 seconds
     if len(client_requests[client_id]) >= 10:
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-
         response = JSONResponse(
             status_code=429,
             content={
@@ -64,12 +64,18 @@ async def rate_limit(request: Request, call_next):
 
     client_requests[client_id].append(now)
 
+    # Continue to endpoint
     response = await call_next(request)
+
+    # Echo Request ID in response header
+    response.headers["X-Request-ID"] = request_id
+
     return response
+
 
 @app.get("/ping")
 async def ping(request: Request):
     return {
         "email": "24f2003563@ds.study.iitm.ac.in",
-        "request_id": request.state.request_id
+        "request_id": request.state.request_id,
     }
