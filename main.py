@@ -1,113 +1,98 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-import ollama
-import json
-import re
-
-app = FastAPI(title="Invoice Extraction API")
-
-
-# Request Model
-class ExtractRequest(BaseModel):
-    text: str
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
+from prometheus_client import Counter, generate_latest
+import time
+import uuid
+from datetime import datetime
 
 
-# Response Model
-class InvoiceResponse(BaseModel):
-    vendor: str
-    amount: float
-    currency: str
-    date: str
+app = FastAPI()
 
 
-@app.post("/extract", response_model=InvoiceResponse)
-def extract(req: ExtractRequest):
-    # Handle empty input
-    if not req.text.strip():
-        return InvoiceResponse(
-            vendor="",
-            amount=0.0,
-            currency="",
-            date=""
-        )
-
-    prompt = f"""
-You are an invoice information extraction system.
-
-Extract these fields from the invoice text.
-
-Return ONLY valid JSON.
-
-Schema:
-
-{{
-  "vendor": "string",
-  "amount": number,
-  "currency": "USD",
-  "date": "YYYY-MM-DD"
-}}
-
-Rules:
-- vendor = company issuing the invoice
-- amount = total amount due
-- currency = 3-letter uppercase code
-- date = payment due date in YYYY-MM-DD format
-- Do not include explanations.
-- Output ONLY JSON.
-
-Invoice Text:
-
-{req.text}
-"""
-
-    try:
-        response = ollama.chat(
-            model="llama3.2",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        )
-
-        reply = response["message"]["content"].strip()
-
-        # Remove Markdown code fences if present
-        reply = re.sub(r"```json|```", "", reply).strip()
-
-        data = json.loads(reply)
-
-        vendor = str(data.get("vendor", "")).strip()
-
-        try:
-            amount = float(data.get("amount", 0))
-        except Exception:
-            amount = 0.0
-
-        currency = str(data.get("currency", "")).upper().strip()
-
-        date = str(data.get("date", "")).strip()
-
-        return InvoiceResponse(
-            vendor=vendor,
-            amount=amount,
-            currency=currency,
-            date=date,
-        )
-
-    except Exception:
-        # Never return HTTP 500 because of parsing/model issues
-        return InvoiceResponse(
-            vendor="",
-            amount=0.0,
-            currency="",
-            date=""
-        )
+# Count every request
+REQUEST_COUNT = Counter(
+    "http_requests_total",
+    "Total HTTP requests"
+)
 
 
-@app.get("/")
-def root():
-    return {
-        "message": "Invoice Extraction API is running."
+# Store logs in memory
+logs = []
+
+
+# Remember when the server started
+START_TIME = time.time()
+
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+
+    request_id = str(uuid.uuid4())
+
+    response = await call_next(request)
+
+    REQUEST_COUNT.inc()
+
+
+    log_entry = {
+        "level": "INFO",
+        "ts": datetime.utcnow().isoformat(),
+        "path": request.url.path,
+        "request_id": request_id
     }
+
+    logs.append(log_entry)
+
+
+    # Keep only latest 100 logs
+    if len(logs) > 100:
+        logs.pop(0)
+
+
+    return response
+
+
+
+@app.get("/work")
+def work(n: int = 1):
+
+    # Simulate doing work
+    total = 0
+
+    for i in range(n):
+        total += i
+
+
+    return {
+        "email": "student@example.com",
+        "done": n
+    }
+
+
+
+@app.get("/metrics")
+def metrics():
+
+    return PlainTextResponse(
+        generate_latest()
+    )
+
+
+
+@app.get("/healthz")
+def health():
+
+    uptime = time.time() - START_TIME
+
+    return {
+        "status": "ok",
+        "uptime_s": uptime
+    }
+
+
+
+@app.get("/logs/tail")
+def tail_logs(limit: int = 10):
+
+    return logs[-limit:]
