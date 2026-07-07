@@ -6,8 +6,9 @@ import time
 
 app = FastAPI()
 
+
 # -----------------------------
-# CORS Configuration
+# CORS
 # -----------------------------
 allowed_origins = [
     "https://app-1fzxpn.example.com",
@@ -31,19 +32,26 @@ app.add_middleware(
 
 
 # -----------------------------
-# Rate limit storage
+# Rate limiter storage
 # -----------------------------
 client_requests = {}
 
 
 # -----------------------------
-# Middleware:
+# Middleware
 # Request Context + Rate Limit
 # -----------------------------
 @app.middleware("http")
 async def middleware(request: Request, call_next):
 
-    # ===== Request Context =====
+    # Allow CORS preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+
+    # -------------------------
+    # Request Context
+    # -------------------------
     request_id = request.headers.get("X-Request-ID")
 
     if not request_id:
@@ -52,10 +60,13 @@ async def middleware(request: Request, call_next):
     request.state.request_id = request_id
 
 
-    # ===== Rate Limiting =====
+    # -------------------------
+    # Rate Limiting
+    # 10 requests / 10 seconds
+    # -------------------------
     client_id = request.headers.get(
         "X-Client-Id",
-        "anonymous"
+        request.client.host
     )
 
     now = time.time()
@@ -64,15 +75,14 @@ async def middleware(request: Request, call_next):
         client_requests[client_id] = []
 
 
-    # Remove requests older than 10 seconds
+    # Remove old requests
     client_requests[client_id] = [
-        t
-        for t in client_requests[client_id]
+        t for t in client_requests[client_id]
         if now - t < 10
     ]
 
 
-    # Maximum 10 requests / 10 seconds
+    # Block after 10 requests
     if len(client_requests[client_id]) >= 10:
 
         response = JSONResponse(
@@ -95,7 +105,7 @@ async def middleware(request: Request, call_next):
     response = await call_next(request)
 
 
-    # Always return request ID header
+    # Always echo request ID
     response.headers["X-Request-ID"] = request_id
 
     return response
