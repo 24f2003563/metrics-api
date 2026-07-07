@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Header, HTTPException, Response, Query
+from fastapi import FastAPI, Header, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import base64
@@ -6,9 +6,9 @@ import time
 
 app = FastAPI(title="Orders API")
 
-# -----------------------------
-# Enable CORS
-# -----------------------------
+# -------------------------------------------------
+# CORS
+# -------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,81 +17,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
-# Fixed catalog of orders (1-46)
-# -----------------------------
+# -------------------------------------------------
+# Assignment values
+# -------------------------------------------------
 TOTAL_ORDERS = 46
+RATE_LIMIT = 20
+WINDOW = 10
 
-orders = [
-    {
-        "id": i,
-        "item": f"Order {i}"
-    }
-    for i in range(1, TOTAL_ORDERS + 1)
-]
+# Fixed catalog: IDs 1..46
+orders = [{"id": i, "item": f"Order {i}"} for i in range(1, TOTAL_ORDERS + 1)]
 
-# -----------------------------
-# Idempotency storage
-# -----------------------------
+# Idempotency store
 idempotency_store = {}
 next_order_id = 1000
 
-# -----------------------------
-# Rate limit storage
-# -----------------------------
-RATE_LIMIT = 20          # requests
-WINDOW = 10              # seconds
-
+# Rate limiter store
 client_requests = {}
 
 
-# ==========================================================
-# Rate Limiter
-# ==========================================================
-def check_rate_limit(client_id: str):
+# -------------------------------------------------
+# Rate limiter
+# -------------------------------------------------
+def rate_limit(client_id: str):
     now = time.time()
 
     timestamps = client_requests.get(client_id, [])
 
-    # Keep only requests from the last 10 seconds
+    # Keep only requests within last 10 seconds
     timestamps = [t for t in timestamps if now - t < WINDOW]
 
     if len(timestamps) >= RATE_LIMIT:
-        retry_after = max(1, int(WINDOW - (now - timestamps[0])))
-
         return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded"},
-            headers={"Retry-After": str(retry_after)}
+            headers={
+                "Retry-After": "10"
+            }
         )
 
     timestamps.append(now)
     client_requests[client_id] = timestamps
+
     return None
 
 
-# ==========================================================
+# -------------------------------------------------
+# Health check
+# -------------------------------------------------
+@app.get("/")
+def root():
+    return {"status": "running"}
+
+
+# -------------------------------------------------
 # POST /orders
-# Idempotent order creation
-# ==========================================================
+# -------------------------------------------------
 @app.post("/orders", status_code=201)
 def create_order(
     response: Response,
-    idempotency_key: str = Header(..., alias="Idempotency-Key"),
-    client_id: str = Header(..., alias="X-Client-Id")
+    client_id: str = Header(..., alias="X-Client-Id"),
+    idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
     global next_order_id
 
-    rate_limit_response = check_rate_limit(client_id)
-    if rate_limit_response:
-        return rate_limit_response
+    limited = rate_limit(client_id)
+    if limited:
+        return limited
 
-    # If key already exists, return same order
+    # Same key => same order
     if idempotency_key in idempotency_store:
         response.status_code = 201
         return idempotency_store[idempotency_key]
 
-    # Create new order
     order = {
         "id": next_order_id,
         "item": "New Order"
@@ -104,50 +101,40 @@ def create_order(
     return order
 
 
-# ==========================================================
+# -------------------------------------------------
 # GET /orders
-# Cursor Pagination
-# ==========================================================
+# -------------------------------------------------
 @app.get("/orders")
-def get_orders(
-    limit: int = Query(10, gt=0),
+def list_orders(
+    limit: int = Query(..., gt=0),
     cursor: str | None = None,
     client_id: str = Header(..., alias="X-Client-Id")
 ):
+    limited = rate_limit(client_id)
+    if limited:
+        return limited
 
-    rate_limit_response = check_rate_limit(client_id)
-    if rate_limit_response:
-        return rate_limit_response
-
-    # Decode cursor
-    if cursor is None:
-        start = 0
-    else:
+    if cursor:
         try:
-            start = int(base64.b64decode(cursor.encode()).decode())
+            start = int(base64.b64decode(cursor).decode())
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid cursor")
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Invalid cursor"}
+            )
+    else:
+        start = 0
 
-    end = min(start + limit, len(orders))
+    end = min(start + limit, TOTAL_ORDERS)
 
-    page = orders[start:end]
+    items = orders[start:end]
 
-    if end >= len(orders):
+    if end >= TOTAL_ORDERS:
         next_cursor = None
     else:
         next_cursor = base64.b64encode(str(end).encode()).decode()
 
     return {
-        "items": page,
+        "items": items,
         "next_cursor": next_cursor
-    }
-
-
-# ==========================================================
-# Health Check
-# ==========================================================
-@app.get("/")
-def root():
-    return {
-        "message": "Orders API is running"
     }
