@@ -1,3 +1,4 @@
 fastapi
 uvicorn
-prometheus_client
+ollama
+pydantic
