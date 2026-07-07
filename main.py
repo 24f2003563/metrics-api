@@ -74,7 +74,7 @@ def check_rate_limit(client_id: str):
 # POST /orders
 # Idempotent order creation
 # ==========================================================
-@app.get("/orders", status_code=201)
+@app.post("/orders", status_code=201)
 def create_order(
     response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
@@ -115,7 +115,9 @@ def get_orders(
     client_id: str = Header(..., alias="X-Client-Id")
 ):
 
-    check_rate_limit(client_id)
+    rate_limit_response = check_rate_limit(client_id)
+    if rate_limit_response:
+        return rate_limit_response
 
     # Decode cursor
     if cursor is None:
