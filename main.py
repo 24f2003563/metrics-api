@@ -9,7 +9,7 @@ app = FastAPI()
 # Replace the second origin with the ACTUAL exam page origin if provided.
 allowed_origins = [
     "https://app-1fzxpn.example.com",
-    # "https://<actual-exam-origin>"
+    "https://exam.sanand.workers.dev",
 ]
 
 app.add_middleware(
