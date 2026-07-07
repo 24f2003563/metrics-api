@@ -6,7 +6,6 @@ import time
 
 app = FastAPI()
 
-# Replace the second origin with the ACTUAL exam page origin if provided.
 allowed_origins = [
     "https://app-1fzxpn.example.com",
     "https://exam.sanand.workers.dev",
@@ -20,53 +19,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Stores timestamps for each client ID
 clients = {}
 
-# -----------------------------
-# Middleware 1: Request Context
-# -----------------------------
+
+# Request Context Middleware
 @app.middleware("http")
 async def request_context(request: Request, call_next):
+
+    # Read incoming X-Request-ID
     request_id = request.headers.get("X-Request-ID")
 
+    # Generate if missing
     if not request_id:
         request_id = str(uuid.uuid4())
 
+    # Save for endpoint
     request.state.request_id = request_id
 
     response = await call_next(request)
 
+    # Echo same ID back in response header
     response.headers["X-Request-ID"] = request_id
 
     return response
 
 
-# -----------------------------
-# Middleware 2: Rate Limiter
-# -----------------------------
+# Rate Limiter Middleware
 @app.middleware("http")
 async def rate_limiter(request: Request, call_next):
 
-    # Don't rate-limit CORS preflight requests
+    # Allow CORS preflight
     if request.method == "OPTIONS":
         return await call_next(request)
 
     client_id = request.headers.get("X-Client-Id", "anonymous")
 
-    WINDOW = 10  # seconds
-    LIMIT = 10   # requests
     now = time.time()
+
+    WINDOW = 10
+    LIMIT = 10
 
     history = clients.get(client_id, [])
 
-    # Remove expired timestamps
-    history = [t for t in history if now - t < WINDOW]
+    history = [
+        timestamp
+        for timestamp in history
+        if now - timestamp < WINDOW
+    ]
 
     if len(history) >= LIMIT:
         return JSONResponse(
             status_code=429,
-            content={"detail": "Rate limit exceeded"},
+            content={"detail": "Rate limit exceeded"}
         )
 
     history.append(now)
@@ -75,9 +79,6 @@ async def rate_limiter(request: Request, call_next):
     return await call_next(request)
 
 
-# -----------------------------
-# Endpoint
-# -----------------------------
 @app.get("/ping")
 async def ping(request: Request):
     return {
