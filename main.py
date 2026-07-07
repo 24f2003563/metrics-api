@@ -8,85 +8,60 @@ app = FastAPI()
 
 allowed_origins = [
     "https://app-1fzxpn.example.com",
-    "https://exam.sanand.workers.dev",
+    "https://exam.sanand.workers.dev"
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-clients = {}
+client_requests = {}
 
-
-# -----------------------------
-# Request Context Middleware
-# -----------------------------
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-
     request_id = request.headers.get("X-Request-ID")
 
-    if request_id is None:
+    if not request_id:
         request_id = str(uuid.uuid4())
 
     request.state.request_id = request_id
 
     response = await call_next(request)
 
-    # Always echo request ID in response header
     response.headers["X-Request-ID"] = request_id
 
     return response
 
-
-# -----------------------------
-# Rate Limit Middleware
-# -----------------------------
 @app.middleware("http")
-async def rate_limiter(request: Request, call_next):
-
-    # Do not block CORS preflight
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
+async def rate_limit(request: Request, call_next):
     client_id = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
 
-    LIMIT = 10
-    WINDOW = 10
+    if client_id not in client_requests:
+        client_requests[client_id] = []
 
-    requests = clients.get(client_id, [])
-
-    requests = [
-        t for t in requests
-        if now - t < WINDOW
+    client_requests[client_id] = [
+        t for t in client_requests[client_id]
+        if now - t < 10
     ]
 
-    if len(requests) >= LIMIT:
-        response = JSONResponse(
+    if len(client_requests[client_id]) >= 10:
+        return JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded"}
         )
 
-        # Add X-Request-ID even for 429 responses
-        response.headers["X-Request-ID"] = request.state.request_id
+    client_requests[client_id].append(now)
 
-        return response
+    response = await call_next(request)
 
-    requests.append(now)
-    clients[client_id] = requests
+    return response
 
-    return await call_next(request)
-
-
-# -----------------------------
-# Endpoint
-# -----------------------------
 @app.get("/ping")
 async def ping(request: Request):
     return {
