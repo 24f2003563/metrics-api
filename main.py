@@ -38,18 +38,19 @@ client_requests = {}
 # -------------------------------------------------
 # Rate limiter
 # -------------------------------------------------
+from fastapi.responses import Response
+
 def rate_limit(client_id: str):
     now = time.time()
 
     timestamps = client_requests.get(client_id, [])
-
-    # Keep only requests within last 10 seconds
     timestamps = [t for t in timestamps if now - t < WINDOW]
 
     if len(timestamps) >= RATE_LIMIT:
-        return JSONResponse(
+        return Response(
+            content='{"detail":"Rate limit exceeded"}',
             status_code=429,
-            content={"detail": "Rate limit exceeded"},
+            media_type="application/json",
             headers={
                 "Retry-After": "10"
             }
@@ -57,7 +58,6 @@ def rate_limit(client_id: str):
 
     timestamps.append(now)
     client_requests[client_id] = timestamps
-
     return None
 
 
