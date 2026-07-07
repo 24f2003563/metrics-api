@@ -1,105 +1,149 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from fastapi import FastAPI, Header, HTTPException, Response, Query
+from fastapi.middleware.cors import CORSMiddleware
+import base64
 import time
-import uuid
 
-app = FastAPI()
+app = FastAPI(title="Orders API")
 
-# Record application startup time
-startup_time = time.time()
-
-# Prometheus Counter
-http_requests_total = Counter(
-    "http_requests_total",
-    "Total HTTP requests"
+# -----------------------------
+# Enable CORS
+# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Store logs in memory
-logs = []
+# -----------------------------
+# Fixed catalog of orders (1-46)
+# -----------------------------
+TOTAL_ORDERS = 46
+
+orders = [
+    {
+        "id": i,
+        "item": f"Order {i}"
+    }
+    for i in range(1, TOTAL_ORDERS + 1)
+]
+
+# -----------------------------
+# Idempotency storage
+# -----------------------------
+idempotency_store = {}
+next_order_id = 1000
+
+# -----------------------------
+# Rate limit storage
+# -----------------------------
+RATE_LIMIT = 20          # requests
+WINDOW = 10              # seconds
+
+client_requests = {}
 
 
-@app.middleware("http")
-async def log_and_count_requests(request: Request, call_next):
-    """
-    Runs before every request.
-    Increments the Prometheus counter and stores a JSON log entry.
-    """
+# ==========================================================
+# Rate Limiter
+# ==========================================================
+def check_rate_limit(client_id: str):
+    now = time.time()
 
-    # Increment request counter
-    http_requests_total.inc()
+    timestamps = client_requests.get(client_id, [])
 
-    # Create log entry
-    log_entry = {
-        "level": "INFO",
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "path": request.url.path,
-        "request_id": str(uuid.uuid4())
+    # Keep only requests made in the last 10 seconds
+    timestamps = [t for t in timestamps if now - t < WINDOW]
+
+    if len(timestamps) >= RATE_LIMIT:
+        retry_after = WINDOW - (now - timestamps[0])
+
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded",
+            headers={
+                "Retry-After": str(max(1, int(retry_after)))
+            }
+        )
+
+    timestamps.append(now)
+    client_requests[client_id] = timestamps
+
+
+# ==========================================================
+# POST /orders
+# Idempotent order creation
+# ==========================================================
+@app.post("/orders", status_code=201)
+def create_order(
+    response: Response,
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+    client_id: str = Header(..., alias="X-Client-Id")
+):
+    global next_order_id
+
+    check_rate_limit(client_id)
+
+    # If key already exists, return same order
+    if idempotency_key in idempotency_store:
+        response.status_code = 201
+        return idempotency_store[idempotency_key]
+
+    # Create new order
+    order = {
+        "id": next_order_id,
+        "item": "New Order"
     }
 
-    logs.append(log_entry)
+    next_order_id += 1
 
-    # Keep only last 1000 logs (optional)
-    if len(logs) > 1000:
-        logs.pop(0)
+    idempotency_store[idempotency_key] = order
 
-    response = await call_next(request)
-    return response
+    return order
 
 
+# ==========================================================
+# GET /orders
+# Cursor Pagination
+# ==========================================================
+@app.get("/orders")
+def get_orders(
+    limit: int = Query(10, gt=0),
+    cursor: str | None = None,
+    client_id: str = Header(..., alias="X-Client-Id")
+):
+
+    check_rate_limit(client_id)
+
+    # Decode cursor
+    if cursor is None:
+        start = 0
+    else:
+        try:
+            start = int(base64.b64decode(cursor.encode()).decode())
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid cursor")
+
+    end = min(start + limit, len(orders))
+
+    page = orders[start:end]
+
+    if end >= len(orders):
+        next_cursor = None
+    else:
+        next_cursor = base64.b64encode(str(end).encode()).decode()
+
+    return {
+        "items": page,
+        "next_cursor": next_cursor
+    }
+
+
+# ==========================================================
+# Health Check
+# ==========================================================
 @app.get("/")
-def home():
+def root():
     return {
-        "message": "Production Observability API"
+        "message": "Orders API is running"
     }
-
-
-@app.get("/work")
-def work(n: int = 1):
-    """
-    Simulate doing n units of work.
-    """
-
-    # Fake work
-    for _ in range(n):
-        pass
-
-    return {
-        "email": "24f2003563@ds.study.iitm.ac.in",   # Replace with your email
-        "done": n
-    }
-
-
-@app.get("/metrics")
-def metrics():
-    """
-    Expose Prometheus metrics.
-    """
-    return PlainTextResponse(
-        generate_latest(),
-        media_type=CONTENT_TYPE_LATEST
-    )
-
-
-@app.get("/healthz")
-def healthz():
-    """
-    Health check endpoint.
-    """
-    uptime = time.time() - startup_time
-
-    return {
-        "status": "ok",
-        "uptime_s": uptime
-    }
-
-
-@app.get("/logs/tail")
-def logs_tail(limit: int = 10):
-    """
-    Return the last N log entries.
-    """
-    if limit < 1:
-        limit = 1
-
-    return logs[-limit:]
