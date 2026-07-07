@@ -2,6 +2,7 @@ from fastapi import FastAPI, Header, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import time
 import base64
+from fastapi.responses import JSONResponse
 
 app = FastAPI(title="Orders API")
 
@@ -95,14 +96,17 @@ async def rate_limit(request: Request, call_next):
 # POST /orders
 # Idempotent
 # -----------------------------
-@app.post("/orders", status_code=201)
+
+@app.post("/orders")
 def create_order(
     idempotency_key: str = Header(..., alias="Idempotency-Key")
 ):
 
-    # Already seen this key
     if idempotency_key in idempotency_store:
-        return idempotency_store[idempotency_key]
+        return JSONResponse(
+            status_code=201,
+            content=idempotency_store[idempotency_key]
+        )
 
     new_order = {
         "id": len(orders) + 1,
@@ -111,7 +115,10 @@ def create_order(
 
     idempotency_store[idempotency_key] = new_order
 
-    return new_order
+    return JSONResponse(
+        status_code=201,
+        content=new_order
+    )
 
 
 # -----------------------------
