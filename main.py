@@ -39,7 +39,6 @@ async def request_context(request: Request, call_next):
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
     client_id = request.headers.get("X-Client-Id", "anonymous")
-
     now = time.time()
 
     if client_id not in client_requests:
@@ -51,22 +50,21 @@ async def rate_limit(request: Request, call_next):
     ]
 
     if len(client_requests[client_id]) >= 10:
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-    response = JSONResponse(
-        status_code=429,
-        content={
-            "detail": "Rate limit exceeded",
-            "request_id": request_id,
-        },
-    )
-    response.headers["X-Request-ID"] = request_id
-    return response
+        response = JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Rate limit exceeded",
+                "request_id": request_id,
+            },
+        )
+        response.headers["X-Request-ID"] = request_id
+        return response
 
     client_requests[client_id].append(now)
 
     response = await call_next(request)
-
     return response
 
 @app.get("/ping")
