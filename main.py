@@ -1,124 +1,66 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uuid
 import time
+from collections import defaultdict, deque
 
 app = FastAPI()
 
+RATE_LIMIT = 15
+WINDOW = 10
+requests = defaultdict(deque)
 
-# -----------------------------
-# CORS
-# -----------------------------
-allowed_origins = [
-    "https://app-1fzxpn.example.com",
-    "https://exam.sanand.workers.dev",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "OPTIONS"],
-    allow_headers=[
-        "X-Request-ID",
-        "X-Client-Id",
-        "Content-Type",
-    ],
-    expose_headers=[
-        "X-Request-ID",
-    ],
-)
+EMAIL = "24f2008500@ds.study.iitm.ac.in"
 
 
-# -----------------------------
-# Rate limiter storage
-# -----------------------------
-client_requests = {}
-
-
-# -----------------------------
-# Middleware
-# Request Context + Rate Limit
-# -----------------------------
 @app.middleware("http")
 async def middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
-    # Allow CORS preflight requests
-    if request.method == "OPTIONS":
-        return await call_next(request)
+    if request.method != "OPTIONS":
+        client_id = request.headers.get("X-Client-Id", "anonymous")
+        now = time.time()
+        bucket = requests[client_id]
 
+        while bucket and bucket[0] <= now - WINDOW:
+            bucket.popleft()
 
-    # -------------------------
-    # Request Context
-    # -------------------------
-    request_id = request.headers.get("X-Request-ID")
+        if len(bucket) >= RATE_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "email": EMAIL,
+                    "request_id": request_id,
+                    "detail": "Rate limit exceeded",
+                },
+                headers={"X-Request-ID": request_id},
+            )
 
-    if not request_id:
-        request_id = str(uuid.uuid4())
+        bucket.append(now)
 
     request.state.request_id = request_id
-
-
-    # -------------------------
-    # Rate Limiting
-    # 10 requests / 10 seconds
-    # -------------------------
-    client_id = request.headers.get(
-        "X-Client-Id",
-        request.client.host
-    )
-
-    now = time.time()
-
-    if client_id not in client_requests:
-        client_requests[client_id] = []
-
-
-    # Remove old requests
-    client_requests[client_id] = [
-        t for t in client_requests[client_id]
-        if now - t < 10
-    ]
-
-
-    # Block after 10 requests
-    if len(client_requests[client_id]) >= 10:
-
-        response = JSONResponse(
-            status_code=429,
-            content={
-                "detail": "Rate limit exceeded",
-                "request_id": request_id,
-            },
-        )
-
-        response.headers["X-Request-ID"] = request_id
-
-        return response
-
-
-    client_requests[client_id].append(now)
-
-
-    # Continue request
     response = await call_next(request)
-
-
-    # Always echo request ID
     response.headers["X-Request-ID"] = request_id
-
     return response
 
 
-
-# -----------------------------
-# Endpoint
-# -----------------------------
 @app.get("/ping")
 async def ping(request: Request):
-
     return {
-        "email": "24f2003563@ds.study.iitm.ac.in",
+        "email": EMAIL,
         "request_id": request.state.request_id,
     }
+
+
+# Keep CORS middleware LAST so it wraps even 429 responses
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://app-v3s45q.example.com",
+        "https://exam.sanand.workers.dev",
+    ],
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["X-Request-ID", "X-Client-Id", "Content-Type"],
+    expose_headers=["X-Request-ID"],
+)
