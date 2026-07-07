@@ -22,33 +22,34 @@ app.add_middleware(
 clients = {}
 
 
+# -----------------------------
 # Request Context Middleware
+# -----------------------------
 @app.middleware("http")
 async def request_context(request: Request, call_next):
 
-    # Read incoming X-Request-ID
     request_id = request.headers.get("X-Request-ID")
 
-    # Generate if missing
-    if not request_id:
+    if request_id is None:
         request_id = str(uuid.uuid4())
 
-    # Save for endpoint
     request.state.request_id = request_id
 
     response = await call_next(request)
 
-    # Echo same ID back in response header
+    # Always echo request ID in response header
     response.headers["X-Request-ID"] = request_id
 
     return response
 
 
-# Rate Limiter Middleware
+# -----------------------------
+# Rate Limit Middleware
+# -----------------------------
 @app.middleware("http")
 async def rate_limiter(request: Request, call_next):
 
-    # Allow CORS preflight
+    # Do not block CORS preflight
     if request.method == "OPTIONS":
         return await call_next(request)
 
@@ -56,32 +57,39 @@ async def rate_limiter(request: Request, call_next):
 
     now = time.time()
 
-    WINDOW = 10
     LIMIT = 10
+    WINDOW = 10
 
-    history = clients.get(client_id, [])
+    requests = clients.get(client_id, [])
 
-    history = [
-        timestamp
-        for timestamp in history
-        if now - timestamp < WINDOW
+    requests = [
+        t for t in requests
+        if now - t < WINDOW
     ]
 
-    if len(history) >= LIMIT:
-        return JSONResponse(
+    if len(requests) >= LIMIT:
+        response = JSONResponse(
             status_code=429,
             content={"detail": "Rate limit exceeded"}
         )
 
-    history.append(now)
-    clients[client_id] = history
+        # Add X-Request-ID even for 429 responses
+        response.headers["X-Request-ID"] = request.state.request_id
+
+        return response
+
+    requests.append(now)
+    clients[client_id] = requests
 
     return await call_next(request)
 
 
+# -----------------------------
+# Endpoint
+# -----------------------------
 @app.get("/ping")
 async def ping(request: Request):
     return {
         "email": "24f2003563@ds.study.iitm.ac.in",
-        "request_id": request.state.request_id,
+        "request_id": request.state.request_id
     }
